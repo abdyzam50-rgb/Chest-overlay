@@ -1,5 +1,6 @@
 package com.chestoverlay.render;
 
+import com.chestoverlay.config.ChestOverlayConfig;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.block.entity.BarrelBlockEntity;
 import net.minecraft.block.entity.BlockEntity;
@@ -23,34 +24,27 @@ import java.awt.Color;
 
 public class ChestBoxRenderer {
 
-    private static final long START_TIME = System.currentTimeMillis();
-    // Full RGB cycle every 3 seconds
-    private static final float CYCLE_MS = 3000.0f;
-    private static final int RENDER_RANGE = 64;
+    private static final long START_TIME  = System.currentTimeMillis();
+    private static final int  RENDER_RANGE = 64;
 
     public static void render(WorldRenderContext context) {
+        if (!ChestOverlayConfig.enabled) return;
+
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.world == null || client.player == null) return;
 
         VertexConsumerProvider consumers = context.consumers();
         if (consumers == null) return;
 
-        MatrixStack matrices = context.matrixStack();
-        Vec3d cameraPos = context.camera().getPos();
+        float[] rgb = currentColor();
 
-        // Cycle through the full hue spectrum for RGB effect
-        float hue = ((System.currentTimeMillis() - START_TIME) % (long) CYCLE_MS) / CYCLE_MS;
-        int argb = Color.HSBtoRGB(hue, 1.0f, 1.0f);
-        float r = ((argb >> 16) & 0xFF) / 255.0f;
-        float g = ((argb >> 8) & 0xFF) / 255.0f;
-        float b = (argb & 0xFF) / 255.0f;
-
-        // RenderLayer.LINES uses LEQUAL depth test — occluded by walls naturally
-        VertexConsumer lines = consumers.getBuffer(RenderLayer.LINES);
+        MatrixStack matrices  = context.matrixStack();
+        Vec3d     cameraPos   = context.camera().getPos();
+        VertexConsumer lines  = consumers.getBuffer(RenderLayer.LINES);
 
         BlockPos playerPos = client.player.getBlockPos();
-        int chunkRange = RENDER_RANGE / 16 + 1;
-        ChunkPos center = new ChunkPos(playerPos);
+        int chunkRange     = RENDER_RANGE / 16 + 1;
+        ChunkPos center    = new ChunkPos(playerPos);
 
         for (int cx = center.x - chunkRange; cx <= center.x + chunkRange; cx++) {
             for (int cz = center.z - chunkRange; cz <= center.z + chunkRange; cz++) {
@@ -64,19 +58,57 @@ public class ChestBoxRenderer {
                     if (pos.getSquaredDistance(playerPos) > (double) RENDER_RANGE * RENDER_RANGE) continue;
 
                     Box box = getHitbox(client, pos);
-
                     matrices.push();
-                    // Translate to camera-relative space before drawing
                     matrices.translate(-cameraPos.x, -cameraPos.y, -cameraPos.z);
-                    WorldRenderer.drawBox(matrices, lines, box, r, g, b, 1.0f);
+                    WorldRenderer.drawBox(matrices, lines, box, rgb[0], rgb[1], rgb[2], 1.0f);
                     matrices.pop();
                 }
             }
         }
     }
 
+    // ── Color calculation ─────────────────────────────────────────────────────
+
+    private static float[] currentColor() {
+        long elapsed = System.currentTimeMillis() - START_TIME;
+
+        return switch (ChestOverlayConfig.colorMode) {
+            case RGB -> {
+                float hue  = (elapsed % 3000L) / 3000.0f;
+                int   argb = Color.HSBtoRGB(hue, 1.0f, 1.0f);
+                yield new float[]{
+                    ((argb >> 16) & 0xFF) / 255.0f,
+                    ((argb >> 8)  & 0xFF) / 255.0f,
+                    ( argb        & 0xFF) / 255.0f
+                };
+            }
+            case CUSTOM -> new float[]{
+                ChestOverlayConfig.color1R / 255.0f,
+                ChestOverlayConfig.color1G / 255.0f,
+                ChestOverlayConfig.color1B / 255.0f
+            };
+            case PULSE -> {
+                long  cycleMs = (long) (ChestOverlayConfig.pulseSpeed * 1000.0f);
+                float t       = (elapsed % cycleMs) / (float) cycleMs;
+                // Smooth sine wave: 0 → 1 → 0 over one cycle
+                float blend   = (float) (Math.sin(t * Math.PI * 2) * 0.5 + 0.5);
+                yield new float[]{
+                    lerp(ChestOverlayConfig.color1R / 255.0f, ChestOverlayConfig.color2R / 255.0f, blend),
+                    lerp(ChestOverlayConfig.color1G / 255.0f, ChestOverlayConfig.color2G / 255.0f, blend),
+                    lerp(ChestOverlayConfig.color1B / 255.0f, ChestOverlayConfig.color2B / 255.0f, blend)
+                };
+            }
+        };
+    }
+
+    private static float lerp(float a, float b, float t) {
+        return a + (b - a) * t;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
     private static boolean isStorage(BlockEntity be) {
-        // ChestBlockEntity covers both normal and trapped chests (TrappedChestBlockEntity extends it)
+        // TrappedChestBlockEntity extends ChestBlockEntity, so one check covers both
         return be instanceof ChestBlockEntity
             || be instanceof BarrelBlockEntity
             || be instanceof ShulkerBoxBlockEntity
@@ -86,9 +118,7 @@ public class ChestBoxRenderer {
     private static Box getHitbox(MinecraftClient client, BlockPos pos) {
         try {
             VoxelShape shape = client.world.getBlockState(pos).getOutlineShape(client.world, pos);
-            if (!shape.isEmpty()) {
-                return shape.getBoundingBox().offset(pos);
-            }
+            if (!shape.isEmpty()) return shape.getBoundingBox().offset(pos);
         } catch (Exception ignored) {}
         return new Box(pos);
     }
