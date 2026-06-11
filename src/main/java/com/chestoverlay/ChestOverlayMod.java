@@ -37,22 +37,36 @@ public class ChestOverlayMod implements ClientModInitializer {
     }
 
     /**
-     * The KeyBinding constructor signature changed in 1.21.4:
-     *   old (≤1.21.1): KeyBinding(String, InputUtil.Type, int, String)
-     *   new (≥1.21.4): KeyBinding(String, int, String)
-     * Reflection lets the same JAR work on both.
+     * KeyBinding constructor changed across MC versions:
+     *   1.21.4+ / 1.21.11: KeyBinding(String, InputUtil.Key, String)
+     *   ≤1.21.1:            KeyBinding(String, InputUtil.Type, int, String)
+     *
+     * Both paths use reflection so the same JAR handles either version.
+     * InputUtil.Type.KEYSYM.createFromCode() is stable across all versions
+     * and gives us the InputUtil.Key needed for the new constructor.
      */
     private static KeyBinding makeKeyBinding(String id, int code, String category) {
+        // InputUtil.Key wraps type+code and exists in all relevant MC versions
+        InputUtil.Key key = InputUtil.Type.KEYSYM.createFromCode(code);
+
+        // New API (1.21.4+): KeyBinding(String, InputUtil.Key, String)
         try {
-            // New API (1.21.4+ / 1.21.11): no InputUtil.Type parameter
-            return KeyBinding.class
-                .getConstructor(String.class, int.class, String.class)
-                .newInstance(id, code, category);
+            return (KeyBinding) KeyBinding.class
+                .getConstructor(String.class, InputUtil.Key.class, String.class)
+                .newInstance(id, key, category);
         } catch (NoSuchMethodException ignored) {
-            // Old API (≤1.21.1)
-            return new KeyBinding(id, InputUtil.Type.KEYSYM, code, category);
+            // fall through to old API
         } catch (ReflectiveOperationException e) {
-            throw new RuntimeException("Could not create KeyBinding", e);
+            throw new RuntimeException("Could not create KeyBinding (new API)", e);
+        }
+
+        // Old API (≤1.21.1): KeyBinding(String, InputUtil.Type, int, String)
+        try {
+            return (KeyBinding) KeyBinding.class
+                .getConstructor(String.class, InputUtil.Type.class, int.class, String.class)
+                .newInstance(id, InputUtil.Type.KEYSYM, code, category);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Could not create KeyBinding (old API)", e);
         }
     }
 }
