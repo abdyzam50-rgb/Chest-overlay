@@ -8,11 +8,12 @@ import net.minecraft.block.entity.ChestBlockEntity;
 import net.minecraft.block.entity.EnderChestBlockEntity;
 import net.minecraft.block.entity.ShulkerBoxBlockEntity;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.RenderLayer;
-import net.minecraft.client.render.VertexConsumer;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.render.WorldRenderer;
-import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.client.render.BufferBuilder;
+import net.minecraft.client.render.BufferRenderer;
+import net.minecraft.client.render.GameRenderer;
+import net.minecraft.client.render.Tessellator;
+import net.minecraft.client.render.VertexFormat;
+import net.minecraft.client.render.VertexFormats;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
@@ -20,102 +21,107 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.shape.VoxelShape;
 import net.minecraft.world.chunk.WorldChunk;
 
-import net.minecraft.client.render.VertexConsumerProvider;
+import com.mojang.blaze3d.systems.RenderSystem;
 
 import java.awt.Color;
+import java.util.ArrayList;
+import java.util.List;
 
 public class ChestBoxRenderer {
 
-    /**
-     * Mixin fallback: called directly from WorldRendererMixin when WorldRenderEvents
-     * is unavailable (Fabric API change in newer MC versions).
-     */
+    private static final long START_TIME   = System.currentTimeMillis();
+    private static final int  RENDER_RANGE = 64;
+
+    /** Called from WorldRendererMixin at TAIL of WorldRenderer.render(). */
     public static void renderDirect() {
         if (!ChestOverlayConfig.enabled) return;
         MinecraftClient client = MinecraftClient.getInstance();
         if (client == null || client.world == null || client.player == null) return;
-        try {
-            Vec3d cameraPos = client.gameRenderer.getCamera().getPos();
-            VertexConsumerProvider.Immediate consumers =
-                client.getBufferBuilders().getEntityVertexConsumers();
 
-            float[] rgb = currentColor();
-            MatrixStack matrices = new MatrixStack();
-            VertexConsumer lines = consumers.getBuffer(RenderLayer.LINES);
+        Vec3d camPos   = client.gameRenderer.getCamera().getPos();
+        BlockPos pPos  = client.player.getBlockPos();
+        float[]  rgb   = currentColor();
 
-            BlockPos playerPos = client.player.getBlockPos();
-            int chunkRange = RENDER_RANGE / 16 + 1;
-            ChunkPos center = new ChunkPos(playerPos);
+        List<Box> boxes = new ArrayList<>();
+        int chunkRange  = RENDER_RANGE / 16 + 1;
+        ChunkPos center = new ChunkPos(pPos);
 
-            matrices.push();
-            matrices.translate(-cameraPos.x, -cameraPos.y, -cameraPos.z);
-            try {
-                for (int cx = center.x - chunkRange; cx <= center.x + chunkRange; cx++) {
-                    for (int cz = center.z - chunkRange; cz <= center.z + chunkRange; cz++) {
-                        WorldChunk chunk = client.world.getChunkManager().getWorldChunk(cx, cz);
-                        if (chunk == null) continue;
-                        for (BlockEntity be : chunk.getBlockEntities().values()) {
-                            if (!isStorage(be)) continue;
-                            BlockPos pos = be.getPos();
-                            if (pos.getSquaredDistance(playerPos) > (double) RENDER_RANGE * RENDER_RANGE) continue;
-                            Box box = getHitbox(client, pos);
-                            WorldRenderer.drawBox(matrices, lines, box, rgb[0], rgb[1], rgb[2], 1.0f);
-                        }
-                    }
+        for (int cx = center.x - chunkRange; cx <= center.x + chunkRange; cx++) {
+            for (int cz = center.z - chunkRange; cz <= center.z + chunkRange; cz++) {
+                WorldChunk chunk = client.world.getChunkManager().getWorldChunk(cx, cz);
+                if (chunk == null) continue;
+                for (BlockEntity be : chunk.getBlockEntities().values()) {
+                    if (!isStorage(be)) continue;
+                    BlockPos pos = be.getPos();
+                    if (pos.getSquaredDistance(pPos) > (double) RENDER_RANGE * RENDER_RANGE) continue;
+                    boxes.add(getHitbox(client, pos));
                 }
-            } finally {
-                matrices.pop();
             }
-            consumers.draw(RenderLayer.LINES);
-        } catch (Throwable ignored) {}
+        }
+
+        if (boxes.isEmpty()) return;
+
+        try {
+            RenderSystem.enableDepthTest();
+            RenderSystem.lineWidth(2.0f);
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
+            RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+
+            Tessellator    tess = Tessellator.getInstance();
+            BufferBuilder  buf  = tess.begin(VertexFormat.DrawMode.DEBUG_LINES, VertexFormats.POSITION_COLOR);
+
+            float r = rgb[0], g = rgb[1], b = rgb[2];
+            for (Box box : boxes) {
+                float x1 = (float)(box.minX - camPos.x);
+                float y1 = (float)(box.minY - camPos.y);
+                float z1 = (float)(box.minZ - camPos.z);
+                float x2 = (float)(box.maxX - camPos.x);
+                float y2 = (float)(box.maxY - camPos.y);
+                float z2 = (float)(box.maxZ - camPos.z);
+                addBox(buf, x1, y1, z1, x2, y2, z2, r, g, b);
+            }
+
+            BufferRenderer.drawWithGlobalProgram(buf.end());
+        } catch (Throwable e) {
+            System.err.println("[ChestOverlay] renderDirect error: " + e);
+        }
     }
 
-    private static final long START_TIME  = System.currentTimeMillis();
-    private static final int  RENDER_RANGE = 64;
-
+    /** WorldRenderEvents path (used when available, not needed on 1.21.11). */
     public static void render(WorldRenderContext context) {
-        if (!ChestOverlayConfig.enabled) return;
+        renderDirect();
+    }
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.world == null || client.player == null) return;
+    // ── Box drawing ───────────────────────────────────────────────────────────
 
-        VertexConsumerProvider consumers = context.consumers();
-        if (consumers == null) return;
+    private static void addBox(BufferBuilder buf,
+                                float x1, float y1, float z1,
+                                float x2, float y2, float z2,
+                                float r,  float g,  float b) {
+        // bottom face
+        line(buf, x1,y1,z1, x2,y1,z1, r,g,b);
+        line(buf, x2,y1,z1, x2,y1,z2, r,g,b);
+        line(buf, x2,y1,z2, x1,y1,z2, r,g,b);
+        line(buf, x1,y1,z2, x1,y1,z1, r,g,b);
+        // top face
+        line(buf, x1,y2,z1, x2,y2,z1, r,g,b);
+        line(buf, x2,y2,z1, x2,y2,z2, r,g,b);
+        line(buf, x2,y2,z2, x1,y2,z2, r,g,b);
+        line(buf, x1,y2,z2, x1,y2,z1, r,g,b);
+        // vertical edges
+        line(buf, x1,y1,z1, x1,y2,z1, r,g,b);
+        line(buf, x2,y1,z1, x2,y2,z1, r,g,b);
+        line(buf, x2,y1,z2, x2,y2,z2, r,g,b);
+        line(buf, x1,y1,z2, x1,y2,z2, r,g,b);
+    }
 
-        MatrixStack matrices = context.matrixStack();
-        if (matrices == null) return;
-
-        float[] rgb = currentColor();
-
-        Vec3d     cameraPos   = context.camera().getPos();
-        VertexConsumer lines  = consumers.getBuffer(RenderLayer.LINES);
-
-        BlockPos playerPos = client.player.getBlockPos();
-        int chunkRange     = RENDER_RANGE / 16 + 1;
-        ChunkPos center    = new ChunkPos(playerPos);
-
-        matrices.push();
-        matrices.translate(-cameraPos.x, -cameraPos.y, -cameraPos.z);
-        try {
-            for (int cx = center.x - chunkRange; cx <= center.x + chunkRange; cx++) {
-                for (int cz = center.z - chunkRange; cz <= center.z + chunkRange; cz++) {
-                    WorldChunk chunk = client.world.getChunkManager().getWorldChunk(cx, cz);
-                    if (chunk == null) continue;
-
-                    for (BlockEntity be : chunk.getBlockEntities().values()) {
-                        if (!isStorage(be)) continue;
-
-                        BlockPos pos = be.getPos();
-                        if (pos.getSquaredDistance(playerPos) > (double) RENDER_RANGE * RENDER_RANGE) continue;
-
-                        Box box = getHitbox(client, pos);
-                        WorldRenderer.drawBox(matrices, lines, box, rgb[0], rgb[1], rgb[2], 1.0f);
-                    }
-                }
-            }
-        } finally {
-            matrices.pop();
-        }
+    private static void line(BufferBuilder buf,
+                               float x1, float y1, float z1,
+                               float x2, float y2, float z2,
+                               float r,  float g,  float b) {
+        buf.vertex(x1, y1, z1).color(r, g, b, 1f);
+        buf.vertex(x2, y2, z2).color(r, g, b, 1f);
     }
 
     // ── Color calculation ─────────────────────────────────────────────────────
@@ -141,7 +147,6 @@ public class ChestBoxRenderer {
             case PULSE -> {
                 long  cycleMs = (long) (ChestOverlayConfig.pulseSpeed * 1000.0f);
                 float t       = (elapsed % cycleMs) / (float) cycleMs;
-                // Smooth sine wave: 0 → 1 → 0 over one cycle
                 float blend   = (float) (Math.sin(t * Math.PI * 2) * 0.5 + 0.5);
                 yield new float[]{
                     lerp(ChestOverlayConfig.color1R / 255.0f, ChestOverlayConfig.color2R / 255.0f, blend),
@@ -152,14 +157,11 @@ public class ChestBoxRenderer {
         };
     }
 
-    private static float lerp(float a, float b, float t) {
-        return a + (b - a) * t;
-    }
+    private static float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static boolean isStorage(BlockEntity be) {
-        // TrappedChestBlockEntity extends ChestBlockEntity, so one check covers both
         return be instanceof ChestBlockEntity
             || be instanceof BarrelBlockEntity
             || be instanceof ShulkerBoxBlockEntity
