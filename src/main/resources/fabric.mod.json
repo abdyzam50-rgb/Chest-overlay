@@ -7,6 +7,9 @@
   "authors": [],
   "license": "MIT",
   "environment": "client",
+  "mixins": [
+    "chestoverlay.mixins.json"
+  ],
   "entrypoints": {
     "client": [
       "com.chestoverlay.ChestOverlayMod"

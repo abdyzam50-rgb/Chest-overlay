@@ -20,9 +20,55 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.shape.VoxelShape;
 import net.minecraft.world.chunk.WorldChunk;
 
+import net.minecraft.client.render.VertexConsumerProvider;
+
 import java.awt.Color;
 
 public class ChestBoxRenderer {
+
+    /**
+     * Mixin fallback: called directly from WorldRendererMixin when WorldRenderEvents
+     * is unavailable (Fabric API change in newer MC versions).
+     */
+    public static void renderDirect() {
+        if (!ChestOverlayConfig.enabled) return;
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client == null || client.world == null || client.player == null) return;
+        try {
+            Vec3d cameraPos = client.gameRenderer.getCamera().getPos();
+            VertexConsumerProvider.Immediate consumers =
+                client.getBufferBuilders().getEntityVertexConsumers();
+
+            float[] rgb = currentColor();
+            MatrixStack matrices = new MatrixStack();
+            VertexConsumer lines = consumers.getBuffer(RenderLayer.LINES);
+
+            BlockPos playerPos = client.player.getBlockPos();
+            int chunkRange = RENDER_RANGE / 16 + 1;
+            ChunkPos center = new ChunkPos(playerPos);
+
+            matrices.push();
+            matrices.translate(-cameraPos.x, -cameraPos.y, -cameraPos.z);
+            try {
+                for (int cx = center.x - chunkRange; cx <= center.x + chunkRange; cx++) {
+                    for (int cz = center.z - chunkRange; cz <= center.z + chunkRange; cz++) {
+                        WorldChunk chunk = client.world.getChunkManager().getWorldChunk(cx, cz);
+                        if (chunk == null) continue;
+                        for (BlockEntity be : chunk.getBlockEntities().values()) {
+                            if (!isStorage(be)) continue;
+                            BlockPos pos = be.getPos();
+                            if (pos.getSquaredDistance(playerPos) > (double) RENDER_RANGE * RENDER_RANGE) continue;
+                            Box box = getHitbox(client, pos);
+                            WorldRenderer.drawBox(matrices, lines, box, rgb[0], rgb[1], rgb[2], 1.0f);
+                        }
+                    }
+                }
+            } finally {
+                matrices.pop();
+            }
+            consumers.draw(RenderLayer.LINES);
+        } catch (Throwable ignored) {}
+    }
 
     private static final long START_TIME  = System.currentTimeMillis();
     private static final int  RENDER_RANGE = 64;
