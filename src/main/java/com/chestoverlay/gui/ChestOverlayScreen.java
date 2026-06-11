@@ -130,7 +130,15 @@ public class ChestOverlayScreen extends Screen {
     // ── Rendering ────────────────────────────────────────────────────────────
 
     @Override
+    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+        // No-op: prevents the double-blur crash in MC 1.21.11 where both the
+        // framework (before dispatching to render) and Screen.render() call
+        // renderBackground. We call super.renderBackground() ourselves once in render().
+    }
+
+    @Override
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+        super.renderBackground(ctx, mouseX, mouseY, delta);
         super.render(ctx, mouseX, mouseY, delta);
 
         // Title
