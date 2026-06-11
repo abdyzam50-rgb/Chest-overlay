@@ -36,9 +36,11 @@ public class ChestBoxRenderer {
         VertexConsumerProvider consumers = context.consumers();
         if (consumers == null) return;
 
+        MatrixStack matrices = context.matrixStack();
+        if (matrices == null) return;
+
         float[] rgb = currentColor();
 
-        MatrixStack matrices  = context.matrixStack();
         Vec3d     cameraPos   = context.camera().getPos();
         VertexConsumer lines  = consumers.getBuffer(RenderLayer.LINES);
 
@@ -46,24 +48,27 @@ public class ChestBoxRenderer {
         int chunkRange     = RENDER_RANGE / 16 + 1;
         ChunkPos center    = new ChunkPos(playerPos);
 
-        for (int cx = center.x - chunkRange; cx <= center.x + chunkRange; cx++) {
-            for (int cz = center.z - chunkRange; cz <= center.z + chunkRange; cz++) {
-                WorldChunk chunk = client.world.getChunkManager().getWorldChunk(cx, cz);
-                if (chunk == null) continue;
+        matrices.push();
+        matrices.translate(-cameraPos.x, -cameraPos.y, -cameraPos.z);
+        try {
+            for (int cx = center.x - chunkRange; cx <= center.x + chunkRange; cx++) {
+                for (int cz = center.z - chunkRange; cz <= center.z + chunkRange; cz++) {
+                    WorldChunk chunk = client.world.getChunkManager().getWorldChunk(cx, cz);
+                    if (chunk == null) continue;
 
-                for (BlockEntity be : chunk.getBlockEntities().values()) {
-                    if (!isStorage(be)) continue;
+                    for (BlockEntity be : chunk.getBlockEntities().values()) {
+                        if (!isStorage(be)) continue;
 
-                    BlockPos pos = be.getPos();
-                    if (pos.getSquaredDistance(playerPos) > (double) RENDER_RANGE * RENDER_RANGE) continue;
+                        BlockPos pos = be.getPos();
+                        if (pos.getSquaredDistance(playerPos) > (double) RENDER_RANGE * RENDER_RANGE) continue;
 
-                    Box box = getHitbox(client, pos);
-                    matrices.push();
-                    matrices.translate(-cameraPos.x, -cameraPos.y, -cameraPos.z);
-                    WorldRenderer.drawBox(matrices, lines, box, rgb[0], rgb[1], rgb[2], 1.0f);
-                    matrices.pop();
+                        Box box = getHitbox(client, pos);
+                        WorldRenderer.drawBox(matrices, lines, box, rgb[0], rgb[1], rgb[2], 1.0f);
+                    }
                 }
             }
+        } finally {
+            matrices.pop();
         }
     }
 

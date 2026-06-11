@@ -41,7 +41,7 @@ public class ChestOverlayMod implements ClientModInitializer {
                 // Fallback when keybind couldn't be registered: poll INSERT directly
                 try {
                     boolean down = InputUtil.isKeyPressed(
-                        net.minecraft.client.MinecraftClient.getInstance().getWindow().getHandle(),
+                        client.getWindow().getHandle(),
                         GLFW.GLFW_KEY_INSERT
                     );
                     if (down && !insertWasDown && client.currentScreen == null)
