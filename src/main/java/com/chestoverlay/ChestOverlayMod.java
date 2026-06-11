@@ -19,11 +19,8 @@ public class ChestOverlayMod implements ClientModInitializer {
     public void onInitializeClient() {
         ChestOverlayConfig.load();
 
-        // Keybind shows up under "Chest Overlay" in Options → Controls.
-        // Default: INSERT — can be rebound there like any vanilla keybind.
-        OPEN_GUI = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+        OPEN_GUI = KeyBindingHelper.registerKeyBinding(makeKeyBinding(
             "key.chestoverlay.open_gui",
-            InputUtil.Type.KEYSYM,
             GLFW.GLFW_KEY_INSERT,
             "category.chestoverlay"
         ));
@@ -37,5 +34,25 @@ public class ChestOverlayMod implements ClientModInitializer {
         });
 
         WorldRenderEvents.LAST.register(ChestBoxRenderer::render);
+    }
+
+    /**
+     * The KeyBinding constructor signature changed in 1.21.4:
+     *   old (≤1.21.1): KeyBinding(String, InputUtil.Type, int, String)
+     *   new (≥1.21.4): KeyBinding(String, int, String)
+     * Reflection lets the same JAR work on both.
+     */
+    private static KeyBinding makeKeyBinding(String id, int code, String category) {
+        try {
+            // New API (1.21.4+ / 1.21.11): no InputUtil.Type parameter
+            return KeyBinding.class
+                .getConstructor(String.class, int.class, String.class)
+                .newInstance(id, code, category);
+        } catch (NoSuchMethodException ignored) {
+            // Old API (≤1.21.1)
+            return new KeyBinding(id, InputUtil.Type.KEYSYM, code, category);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Could not create KeyBinding", e);
+        }
     }
 }
