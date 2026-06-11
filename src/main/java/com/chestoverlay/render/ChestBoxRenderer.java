@@ -1,7 +1,6 @@
 package com.chestoverlay.render;
 
 import com.chestoverlay.config.ChestOverlayConfig;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.block.entity.BarrelBlockEntity;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.ChestBlockEntity;
@@ -30,35 +29,38 @@ public class ChestBoxRenderer {
     private static final long START_TIME   = System.currentTimeMillis();
     private static final int  RENDER_RANGE = 64;
 
-    private static RenderLayer linesLayer = null;
+    private static RenderLayer linesLayer   = null;
+    private static boolean     layerChecked = false;
 
     private static RenderLayer getLinesLayer() {
-        if (linesLayer != null) return linesLayer;
-        for (String className : new String[]{
+        if (layerChecked) return linesLayer;
+        layerChecked = true;
+        // RenderLayer.LINES in 1.21.1; moved to RenderLayers.LINES in 1.21.11
+        for (String cls : new String[]{
                 "net.minecraft.client.render.RenderLayer",
                 "net.minecraft.client.render.RenderLayers"}) {
             try {
-                Field f = Class.forName(className).getField("LINES");
-                Object val = f.get(null);
-                if (val instanceof RenderLayer rl) {
-                    linesLayer = rl;
-                    return linesLayer;
-                }
+                Field f = Class.forName(cls).getField("LINES");
+                Object v = f.get(null);
+                if (v instanceof RenderLayer rl) { linesLayer = rl; break; }
             } catch (Exception ignored) {}
         }
-        return null;
+        if (linesLayer == null)
+            System.err.println("[ChestOverlay] Could not find LINES render layer via reflection");
+        return linesLayer;
     }
 
-    /** Called from WorldRenderEvents.LAST — projection+view matrices are live. */
-    public static void render(WorldRenderContext context) {
+    /** Called from WorldRendererMixin at TAIL of WorldRenderer.render(). */
+    public static void renderDirect() {
         if (!ChestOverlayConfig.enabled) return;
         MinecraftClient client = MinecraftClient.getInstance();
         if (client == null || client.world == null || client.player == null) return;
+        if (client.gameRenderer == null || client.gameRenderer.getCamera() == null) return;
 
         RenderLayer layer = getLinesLayer();
         if (layer == null) return;
 
-        Vec3d camPos = context.camera().getPos();
+        Vec3d camPos = client.gameRenderer.getCamera().getPos();
         BlockPos pPos = client.player.getBlockPos();
 
         List<Box> boxes = collectBoxes(client, pPos);
@@ -67,20 +69,16 @@ public class ChestBoxRenderer {
         float[] rgb = currentColor();
         float r = rgb[0], g = rgb[1], b = rgb[2];
 
-        MatrixStack matrices = context.matrixStack();
-        matrices.push();
-        // Shift coordinate origin to camera position so world-coords work directly
-        matrices.translate(-camPos.x, -camPos.y, -camPos.z);
-        Matrix4f pose = matrices.peek().getPositionMatrix();
-
         try {
-            // Prefer the consumers already live in the render context; fall back to entity consumers
-            VertexConsumerProvider.Immediate consumers;
-            if (context.consumers() instanceof VertexConsumerProvider.Immediate imm) {
-                consumers = imm;
-            } else {
-                consumers = client.getBufferBuilders().getEntityVertexConsumers();
-            }
+            VertexConsumerProvider.Immediate consumers =
+                    client.getBufferBuilders().getEntityVertexConsumers();
+
+            // Build a pose matrix that shifts world coords to camera-relative space.
+            // At the tail of WorldRenderer.render() the GL model-view matrix is
+            // effectively identity, so we only need to subtract the camera position.
+            MatrixStack matrices = new MatrixStack();
+            matrices.translate(-camPos.x, -camPos.y, -camPos.z);
+            Matrix4f pose = matrices.peek().getPositionMatrix();
 
             VertexConsumer buf = consumers.getBuffer(layer);
 
@@ -93,10 +91,8 @@ public class ChestBoxRenderer {
 
             consumers.draw(layer);
         } catch (Throwable e) {
-            System.err.println("[ChestOverlay] render error: " + e);
-            e.printStackTrace(System.err);
-        } finally {
-            matrices.pop();
+            System.err.println("[ChestOverlay] renderDirect error: "
+                + e.getClass().getName() + ": " + e.getMessage());
         }
     }
 
@@ -128,17 +124,14 @@ public class ChestBoxRenderer {
                                 float x1, float y1, float z1,
                                 float x2, float y2, float z2,
                                 float r,  float g,  float b) {
-        // bottom face
         line(buf, pose, x1,y1,z1, x2,y1,z1, r,g,b);
         line(buf, pose, x2,y1,z1, x2,y1,z2, r,g,b);
         line(buf, pose, x2,y1,z2, x1,y1,z2, r,g,b);
         line(buf, pose, x1,y1,z2, x1,y1,z1, r,g,b);
-        // top face
         line(buf, pose, x1,y2,z1, x2,y2,z1, r,g,b);
         line(buf, pose, x2,y2,z1, x2,y2,z2, r,g,b);
         line(buf, pose, x2,y2,z2, x1,y2,z2, r,g,b);
         line(buf, pose, x1,y2,z2, x1,y2,z1, r,g,b);
-        // vertical edges
         line(buf, pose, x1,y1,z1, x1,y2,z1, r,g,b);
         line(buf, pose, x2,y1,z1, x2,y2,z1, r,g,b);
         line(buf, pose, x2,y1,z2, x2,y2,z2, r,g,b);
@@ -161,7 +154,6 @@ public class ChestBoxRenderer {
 
     private static float[] currentColor() {
         long elapsed = System.currentTimeMillis() - START_TIME;
-
         return switch (ChestOverlayConfig.colorMode) {
             case RGB -> {
                 float hue  = (elapsed % 3000L) / 3000.0f;
