@@ -1,29 +1,26 @@
 package com.chestoverlay.render;
 
 import com.chestoverlay.config.ChestOverlayConfig;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.block.entity.BarrelBlockEntity;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.ChestBlockEntity;
 import net.minecraft.block.entity.EnderChestBlockEntity;
 import net.minecraft.block.entity.ShulkerBoxBlockEntity;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.render.BufferBuilder;
-import net.minecraft.client.render.BufferRenderer;
-import net.minecraft.client.render.GameRenderer;
-import net.minecraft.client.render.Tessellator;
-import net.minecraft.client.render.VertexFormat;
-import net.minecraft.client.render.VertexFormats;
+import net.minecraft.client.render.RenderLayer;
+import net.minecraft.client.render.VertexConsumer;
+import net.minecraft.client.render.VertexConsumerProvider;
+import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.shape.VoxelShape;
 import net.minecraft.world.chunk.WorldChunk;
-
-import com.mojang.blaze3d.systems.RenderSystem;
+import org.joml.Matrix4f;
 
 import java.awt.Color;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,15 +29,38 @@ public class ChestBoxRenderer {
     private static final long START_TIME   = System.currentTimeMillis();
     private static final int  RENDER_RANGE = 64;
 
-    /** Called from WorldRendererMixin at TAIL of WorldRenderer.render(). */
+    private static RenderLayer linesLayer = null;
+
+    private static RenderLayer getLinesLayer() {
+        if (linesLayer != null) return linesLayer;
+        // Try RenderLayer.LINES first (MC 1.21.1), then RenderLayers.LINES (MC 1.21.11+)
+        for (String className : new String[]{"net.minecraft.client.render.RenderLayer",
+                                             "net.minecraft.client.render.RenderLayers"}) {
+            try {
+                Field f = Class.forName(className).getField("LINES");
+                Object val = f.get(null);
+                if (val instanceof RenderLayer rl) {
+                    linesLayer = rl;
+                    return linesLayer;
+                }
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    /** Called from GameRendererMixin at TAIL of GameRenderer.render(). */
     public static void renderDirect() {
         if (!ChestOverlayConfig.enabled) return;
         MinecraftClient client = MinecraftClient.getInstance();
         if (client == null || client.world == null || client.player == null) return;
+        if (client.gameRenderer == null || client.gameRenderer.getCamera() == null) return;
 
-        Vec3d camPos   = client.gameRenderer.getCamera().getPos();
-        BlockPos pPos  = client.player.getBlockPos();
-        float[]  rgb   = currentColor();
+        RenderLayer layer = getLinesLayer();
+        if (layer == null) return;
+
+        Vec3d camPos  = client.gameRenderer.getCamera().getPos();
+        BlockPos pPos = client.player.getBlockPos();
+        float[]  rgb  = currentColor();
 
         List<Box> boxes = new ArrayList<>();
         int chunkRange  = RENDER_RANGE / 16 + 1;
@@ -62,66 +82,63 @@ public class ChestBoxRenderer {
         if (boxes.isEmpty()) return;
 
         try {
-            RenderSystem.enableDepthTest();
-            RenderSystem.lineWidth(2.0f);
-            RenderSystem.enableBlend();
-            RenderSystem.defaultBlendFunc();
-            RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+            VertexConsumerProvider.Immediate consumers =
+                    client.getBufferBuilders().getEntityVertexConsumers();
+            VertexConsumer buf = consumers.getBuffer(layer);
 
-            Tessellator    tess = Tessellator.getInstance();
-            BufferBuilder  buf  = tess.begin(VertexFormat.DrawMode.DEBUG_LINES, VertexFormats.POSITION_COLOR);
+            MatrixStack matrices = new MatrixStack();
+            matrices.translate(-camPos.x, -camPos.y, -camPos.z);
+            Matrix4f pose = matrices.peek().getPositionMatrix();
 
             float r = rgb[0], g = rgb[1], b = rgb[2];
+
             for (Box box : boxes) {
-                float x1 = (float)(box.minX - camPos.x);
-                float y1 = (float)(box.minY - camPos.y);
-                float z1 = (float)(box.minZ - camPos.z);
-                float x2 = (float)(box.maxX - camPos.x);
-                float y2 = (float)(box.maxY - camPos.y);
-                float z2 = (float)(box.maxZ - camPos.z);
-                addBox(buf, x1, y1, z1, x2, y2, z2, r, g, b);
+                addBox(buf, pose,
+                    (float) box.minX, (float) box.minY, (float) box.minZ,
+                    (float) box.maxX, (float) box.maxY, (float) box.maxZ,
+                    r, g, b);
             }
 
-            BufferRenderer.drawWithGlobalProgram(buf.end());
+            consumers.draw(layer);
         } catch (Throwable e) {
             System.err.println("[ChestOverlay] renderDirect error: " + e);
         }
     }
 
-    /** WorldRenderEvents path (used when available, not needed on 1.21.11). */
-    public static void render(WorldRenderContext context) {
-        renderDirect();
-    }
-
     // ── Box drawing ───────────────────────────────────────────────────────────
 
-    private static void addBox(BufferBuilder buf,
+    private static void addBox(VertexConsumer buf, Matrix4f pose,
                                 float x1, float y1, float z1,
                                 float x2, float y2, float z2,
                                 float r,  float g,  float b) {
         // bottom face
-        line(buf, x1,y1,z1, x2,y1,z1, r,g,b);
-        line(buf, x2,y1,z1, x2,y1,z2, r,g,b);
-        line(buf, x2,y1,z2, x1,y1,z2, r,g,b);
-        line(buf, x1,y1,z2, x1,y1,z1, r,g,b);
+        line(buf, pose, x1,y1,z1, x2,y1,z1, r,g,b);
+        line(buf, pose, x2,y1,z1, x2,y1,z2, r,g,b);
+        line(buf, pose, x2,y1,z2, x1,y1,z2, r,g,b);
+        line(buf, pose, x1,y1,z2, x1,y1,z1, r,g,b);
         // top face
-        line(buf, x1,y2,z1, x2,y2,z1, r,g,b);
-        line(buf, x2,y2,z1, x2,y2,z2, r,g,b);
-        line(buf, x2,y2,z2, x1,y2,z2, r,g,b);
-        line(buf, x1,y2,z2, x1,y2,z1, r,g,b);
+        line(buf, pose, x1,y2,z1, x2,y2,z1, r,g,b);
+        line(buf, pose, x2,y2,z1, x2,y2,z2, r,g,b);
+        line(buf, pose, x2,y2,z2, x1,y2,z2, r,g,b);
+        line(buf, pose, x1,y2,z2, x1,y2,z1, r,g,b);
         // vertical edges
-        line(buf, x1,y1,z1, x1,y2,z1, r,g,b);
-        line(buf, x2,y1,z1, x2,y2,z1, r,g,b);
-        line(buf, x2,y1,z2, x2,y2,z2, r,g,b);
-        line(buf, x1,y1,z2, x1,y2,z2, r,g,b);
+        line(buf, pose, x1,y1,z1, x1,y2,z1, r,g,b);
+        line(buf, pose, x2,y1,z1, x2,y2,z1, r,g,b);
+        line(buf, pose, x2,y1,z2, x2,y2,z2, r,g,b);
+        line(buf, pose, x1,y1,z2, x1,y2,z2, r,g,b);
     }
 
-    private static void line(BufferBuilder buf,
+    private static void line(VertexConsumer buf, Matrix4f pose,
                                float x1, float y1, float z1,
                                float x2, float y2, float z2,
                                float r,  float g,  float b) {
-        buf.vertex(x1, y1, z1).color(r, g, b, 1f);
-        buf.vertex(x2, y2, z2).color(r, g, b, 1f);
+        // RenderLayer.LINES uses POSITION_COLOR_NORMAL format; normal points along the line
+        float dx = x2 - x1, dy = y2 - y1, dz = z2 - z1;
+        float len = (float) Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (len == 0) return;
+        float nx = dx/len, ny = dy/len, nz = dz/len;
+        buf.vertex(pose, x1, y1, z1).color(r, g, b, 1f).normal(nx, ny, nz);
+        buf.vertex(pose, x2, y2, z2).color(r, g, b, 1f).normal(nx, ny, nz);
     }
 
     // ── Color calculation ─────────────────────────────────────────────────────

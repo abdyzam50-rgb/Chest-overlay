@@ -3,7 +3,8 @@
   "package": "com.chestoverlay.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "WorldRendererMixin"
+    "WorldRendererMixin",
+    "GameRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 0
