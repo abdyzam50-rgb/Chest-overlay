@@ -2,10 +2,7 @@
   "required": false,
   "package": "com.chestoverlay.mixin",
   "compatibilityLevel": "JAVA_21",
-  "client": [
-    "WorldRendererMixin",
-    "GameRendererMixin"
-  ],
+  "client": [],
   "injectors": {
     "defaultRequire": 0
   }
